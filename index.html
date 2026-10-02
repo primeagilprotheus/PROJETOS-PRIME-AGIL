@@ -6945,7 +6945,16 @@ function pageLancamento(){
   if(u.role==='gdr') list = list.filter(c=>c.gdrId===u.id);
   list.sort((a,b)=>a.nome.localeCompare(b.nome));
   const analistas = USERS.filter(x=>x.role==='analista').sort((a,b)=>a.name.localeCompare(b.name));
-  const myManual = AGENDAS.filter(a=>a.origem==='manual' && a.criadoPor===u.id).sort((a,b)=>new Date(b.inicio)-new Date(a.inicio));
+  // GDR vê todo lançamento feito pros clientes da PRÓPRIA carteira, mesmo
+  // que outra pessoa (coordenação, por exemplo) tenha lançado em nome
+  // dele — senão perde a visibilidade de agendas lançadas pra ele por
+  // terceiros. Liderança não tem uma "carteira" fixa, então continua
+  // vendo só o que ela mesma lançou.
+  const myManual = AGENDAS.filter(a => {
+    if (a.origem !== 'manual') return false;
+    if (u.role === 'gdr') return clientById(a.clienteId)?.gdrId === u.id;
+    return a.criadoPor === u.id;
+  }).sort((a,b)=>new Date(b.inicio)-new Date(a.inicio));
   return `
   <div class="topbar">
     <div><h1>Lançamento Manual de Agenda</h1><div class="sub">Disponível para GDR, Coordenação e Gerência — horas são aprovadas automaticamente.</div></div>
