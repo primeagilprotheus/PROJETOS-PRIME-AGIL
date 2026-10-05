@@ -342,7 +342,7 @@ tr.tr-hover:hover{background:rgba(0,194,224,.045);}
 .kanban-card-avatares{display:flex;gap:4px;margin-top:8px;align-items:center;}
 @media (max-width:900px){.kanban-board{grid-template-columns:1fr;}}
 
-.vg-filtros .field{min-width:200px;flex:1;}
+.vg-filtros .field{min-width:165px;flex:1;}
 
 .rec-cliente-row{
   display:flex;align-items:center;gap:10px;padding:11px 16px;cursor:pointer;
@@ -954,6 +954,7 @@ let state = {
   futuroFiltroAnalista: '',
   futuroFiltroGdr: '',
   futuroFiltroPeriodo: '',
+  futuroFiltroAviso: '',
   futuroOrdem: 'data',
   futuroImportCarregando: false,
   futuroImportErro: null,
@@ -4395,6 +4396,52 @@ function ehAgendaInterna(r){
   return nome.startsWith('H.');
 }
 
+// Agendas SEM cliente: "H. INTERNO" = analista ocupado com demanda interna
+// (treinamento, reunião interna...); "H. AUSÊNCIA" = analista que não vai
+// trabalhar (banco de horas, atestado, afastamento...). São gravadas com
+// cliente_id vazio e esse nome em cliente_nome_planilha — o mesmo formato que
+// a importação do Vigente já usa — então RDA, disponibilidade e as demais
+// telas continuam tratando do mesmo jeito.
+const LINHAS_INTERNAS = {
+  interno:  { nome:'H. INTERNO',  rotulo:'H. Interno',  exemplos:'Ex.: Treinamento, reunião interna' },
+  ausencia: { nome:'H. AUSÊNCIA', rotulo:'H. Ausência', exemplos:'Ex.: Banco de horas, atestado, afastamento' },
+};
+function tipoLinhaDeAgenda(r){
+  if (r.clienteId) return 'cliente';
+  const n = String(r.clienteNomePlanilha||'').trim().toUpperCase();
+  if (n.startsWith('H.')) return n.includes('AUS') ? 'ausencia' : 'interno';
+  return 'cliente';
+}
+// Dias úteis (seg–sex, fora feriados cadastrados) entre duas datas ISO, inclusive.
+function diasUteisEntre(inicioISO, fimISO){
+  const out = [];
+  const d = new Date(inicioISO + 'T00:00:00'), fim = new Date(fimISO + 'T00:00:00');
+  while (d <= fim){
+    const dow = d.getDay(), iso = isoDate(d);
+    if (dow>=1 && dow<=5 && !feriadoNoDia(iso)) out.push(iso);
+    d.setDate(d.getDate()+1);
+  }
+  return out;
+}
+// Dois períodos no mesmo dia se atropelam? Mesma regra do Cronograma Futuro:
+// Integral/Horas ocupam o dia todo; meio período só conflita com o mesmo.
+function periodosConflitam(a, b){
+  if (a==='Integral' || b==='Integral' || a==='Horas' || b==='Horas') return true;
+  return a === b;
+}
+// Agendas JÁ existentes no Vigente que atropelam as novas do mesmo analista.
+function conflitosVigenteDoAnalista(analistaId, novas, idsIgnorar){
+  const out = [];
+  for (const n of novas){
+    for (const e of AGENDA_VIGENTE){
+      if (e.analistaId!==analistaId || e.data!==n.data) continue;
+      if (idsIgnorar && idsIgnorar.includes(e.id)) continue;
+      if (periodosConflitam(n.periodo, e.periodo)) out.push(e);
+    }
+  }
+  return out;
+}
+
 function janelaRda(offsetCiclos){
   offsetCiclos = offsetCiclos || 0;
   const hoje = new Date(); hoje.setHours(0,0,0,0);
@@ -6051,12 +6098,12 @@ function pageVigenteView(){
             <td class="mono">${fmtDate(r.data)}</td>
             <td class="cell-sub">${diaSemanaDe(r.data)}</td>
             <td>${r.analistaId ? (userById(r.analistaId) ? (userById(r.analistaId).ativo===false ? `${userById(r.analistaId).name} (indisponível)` : userById(r.analistaId).name) : r.analistaNomePlanilha) : `<span class="cell-sub">${r.analistaNomePlanilha} (não casado)</span>`}</td>
-            <td>${r.clienteId ? (clientById(r.clienteId)?.nome || r.clienteNomePlanilha) : `<span class="cell-sub">${r.clienteNomePlanilha} (não casado)</span>`}</td>
+            <td>${r.clienteId ? (clientById(r.clienteId)?.nome || r.clienteNomePlanilha) : (ehAgendaInterna(r) ? `<span class="badge badge-muted">${r.clienteNomePlanilha}</span>` : `<span class="cell-sub">${r.clienteNomePlanilha} (não casado)</span>`)}</td>
             <td class="cell-sub">${gdrDe(r)||'—'}</td>
             <td class="cell-sub">${r.tipoAgenda||'—'}</td>
             <td>${r.periodo||'—'}</td>
             <td class="mono">${fmtH(r.horas)}h</td>
-            <td style="white-space:nowrap;">${r.rdaUrl
+            <td style="white-space:nowrap;">${ehAgendaInterna(r) ? `<span class="cell-sub" title="H. Interno / H. Ausência não têm RDA">—</span>` : r.rdaUrl
               ? `<a href="${r.rdaUrl}" target="_blank" rel="noopener" class="badge badge-ok" style="text-decoration:none;">🔗 Ver RDA</a>${podeEditarRda?` <button class="btn btn-ghost btn-sm" data-action="abrirModalRdaUrl" data-args='["${r.id}"]'>✎</button>`:''}`
               : (podeEditarRda ? `<button class="btn btn-ghost btn-sm" data-action="abrirModalRdaUrl" data-args='["${r.id}"]'>+ RDA</button>` : `<span class="badge badge-warn">Pendente</span>`)}
             </td>
@@ -6078,7 +6125,7 @@ function pageVigenteView(){
             <td class="mono">${fmtDate(r.data)}</td>
             <td class="cell-sub">${diaSemanaDe(r.data)}</td>
             <td>${r.analistaId ? (userById(r.analistaId) ? (userById(r.analistaId).ativo===false ? `${userById(r.analistaId).name} (indisponível)` : userById(r.analistaId).name) : r.analistaNomePlanilha) : `<span class="cell-sub">${r.analistaNomePlanilha} (não casado)</span>`}</td>
-            <td>${r.clienteId ? (clientById(r.clienteId)?.nome || r.clienteNomePlanilha) : `<span class="cell-sub">${r.clienteNomePlanilha} (não casado)</span>`}</td>
+            <td>${r.clienteId ? (clientById(r.clienteId)?.nome || r.clienteNomePlanilha) : (ehAgendaInterna(r) ? `<span class="badge badge-muted">${r.clienteNomePlanilha}</span>` : `<span class="cell-sub">${r.clienteNomePlanilha} (não casado)</span>`)}</td>
             <td class="cell-sub">${gdrDe(r)||'—'}</td>
             <td class="cell-sub">${r.dataCancelamento? fmtDate(r.dataCancelamento) : '—'}</td>
             <td>${r.comAntecedencia||'—'}</td>
@@ -6272,7 +6319,9 @@ function enviarConviteVigente(id){
   const gcalDates = `${dataCompacta}T${horario.inicio.replace(':','')}00/${dataCompacta}T${horario.fim.replace(':','')}00`;
   const nomeCliente = cliente ? cliente.nome : r.clienteNomePlanilha;
   const nomeAnalista = analistaUser ? analistaUser.name : r.analistaNomePlanilha;
-  const titulo = `Atendimento — ${nomeCliente} (${nomeAnalista})`;
+  const titulo = ehAgendaInterna(r)
+    ? `${r.clienteNomePlanilha} — ${nomeAnalista}${r.tipoAgenda ? ` (${r.tipoAgenda})` : ''}`
+    : `Atendimento — ${nomeCliente} (${nomeAnalista})`;
   const detalhes = `Agenda do Cronograma Vigente.\nPeríodo: ${r.periodo||'Integral'}\nAnalista: ${nomeAnalista}${r.tipoAgenda?`\nTipo: ${r.tipoAgenda}`:''}`;
   const gcalUrl = 'https://calendar.google.com/calendar/render?action=TEMPLATE'
     + '&text=' + encodeURIComponent(titulo)
@@ -6361,11 +6410,12 @@ function openVigenteViewModal(id){
   if(!podeEditarVigente(state.authUser.role)){ toast('Só o RMO pode editar o Cronograma Vigente.', 'err'); return; }
   const r = id ? AGENDA_VIGENTE.find(x=>x.id===id) : null;
   state.modal = { type:'vigenteView', payload: r ? {
-    id: r.id, clienteNome: r.clienteId ? (clientById(r.clienteId)?.nome||r.clienteNomePlanilha) : r.clienteNomePlanilha,
+    id: r.id, tipoLinha: tipoLinhaDeAgenda(r), dataFim: '',
+    clienteNome: r.clienteId ? (clientById(r.clienteId)?.nome||r.clienteNomePlanilha) : r.clienteNomePlanilha,
     analistaId: r.analistaId || '', data: r.data, periodo: r.periodo||'Integral',
     tipoAgenda: r.tipoAgenda||'', horas: r.horas||0,
   } : {
-    id: null, clienteNome: '', analistaId: '', data: '', periodo: 'Integral',
+    id: null, tipoLinha: 'cliente', dataFim: '', clienteNome: '', analistaId: '', data: '', periodo: 'Integral',
     tipoAgenda: '', horas: 8,
   }};
   state.vigenteViewErr = null;
@@ -6384,9 +6434,18 @@ function modalVigenteView(){
       <div class="modal-body">
         ${state.vigenteViewErr? `<div class="err-box">${state.vigenteViewErr}</div>`:''}
         <div class="field">
+          <label>O que é essa agenda?</label>
+          <select id="vv-tipolinha" onchange="vigenteTrocarTipoLinha(this.value)">
+            <option value="cliente" ${p.tipoLinha==='cliente'?'selected':''}>Atendimento a cliente</option>
+            <option value="interno" ${p.tipoLinha==='interno'?'selected':''}>H. Interno — treinamento, demanda interna…</option>
+            <option value="ausencia" ${p.tipoLinha==='ausencia'?'selected':''}>H. Ausência — banco de horas, atestado, afastamento…</option>
+          </select>
+        </div>
+        ${p.tipoLinha==='cliente' ? `
+        <div class="field">
           <label>Cliente *</label>
           <input id="vv-cliente" list="dl-clientes-rec" value="${p.clienteNome||''}" placeholder="Nome do cliente">
-        </div>
+        </div>` : ''}
         <div class="field-row">
           <div class="field">
             <label>Analista *</label>
@@ -6413,9 +6472,14 @@ function modalVigenteView(){
           </div>
         </div>
         <div class="field">
-          <label>Tipo de agenda</label>
-          <input id="vv-tipo" value="${p.tipoAgenda||''}">
+          <label>${p.tipoLinha==='cliente' ? 'Tipo de agenda' : 'Motivo'}</label>
+          <input id="vv-tipo" value="${p.tipoAgenda||''}" ${p.tipoLinha!=='cliente' ? `placeholder="${LINHAS_INTERNAS[p.tipoLinha].exemplos}"` : ''}>
         </div>
+        ${(!p.id && p.tipoLinha!=='cliente') ? `
+        <div class="field">
+          <label>Até (opcional) <span class="cell-sub">— vários dias seguidos: cria 1 agenda por dia útil, sem fim de semana nem feriado</span></label>
+          <input id="vv-data-fim" type="date" value="${p.dataFim||''}">
+        </div>` : ''}
       </div>
       <div class="modal-foot">
         <button type="button" class="btn btn-ghost" data-action="closeModal" data-args='[]'>Cancelar</button>
@@ -6425,58 +6489,106 @@ function modalVigenteView(){
   </div>`;
 }
 
+// Troca o tipo (cliente / H. Interno / H. Ausência) sem perder o que já foi digitado.
+function vigenteTrocarTipoLinha(valor){
+  const p = state.modal.payload;
+  const v = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+  if (document.getElementById('vv-cliente')) p.clienteNome = v('vv-cliente');
+  p.analistaId = v('vv-analista'); p.data = v('vv-data'); p.periodo = v('vv-periodo') || 'Integral';
+  p.horas = parseFloat(v('vv-horas')) || 0; p.tipoAgenda = v('vv-tipo').trim();
+  if (document.getElementById('vv-data-fim')) p.dataFim = v('vv-data-fim');
+  p.tipoLinha = valor;
+  state.vigenteViewErr = null;
+  render();
+}
+
 async function salvarVigenteViewRow(){
   if(state.salvandoVigenteView) return;
   if(!podeEditarVigente(state.authUser.role)){ toast('Só o RMO pode editar o Cronograma Vigente.', 'err'); return; }
   const p = state.modal.payload;
-  const clienteNome = document.getElementById('vv-cliente').value.trim();
-  const analistaId = document.getElementById('vv-analista').value;
-  const data = document.getElementById('vv-data').value;
-  const periodo = document.getElementById('vv-periodo').value;
-  const horas = parseFloat(document.getElementById('vv-horas').value) || 0;
-  const tipoAgenda = document.getElementById('vv-tipo').value.trim();
-  p.clienteNome = clienteNome; p.analistaId = analistaId; p.data = data; p.periodo = periodo; p.horas = horas; p.tipoAgenda = tipoAgenda;
+  const v = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+  const tipoLinha = v('vv-tipolinha') || 'cliente';
+  const clienteNome = v('vv-cliente').trim();
+  const analistaId = v('vv-analista');
+  const data = v('vv-data');
+  const dataFim = v('vv-data-fim');
+  const periodo = v('vv-periodo');
+  const horas = parseFloat(v('vv-horas')) || 0;
+  const tipoAgenda = v('vv-tipo').trim();
+  p.tipoLinha = tipoLinha; p.clienteNome = clienteNome; p.analistaId = analistaId; p.data = data; p.dataFim = dataFim;
+  p.periodo = periodo; p.horas = horas; p.tipoAgenda = tipoAgenda;
 
-  const cliente = CLIENTS.find(c => c.nome.toLowerCase() === clienteNome.toLowerCase());
-  if(!cliente){ state.vigenteViewErr = `"${clienteNome}" não é um cliente cadastrado. Escolha um da lista de sugestões.`; render(); return; }
+  // Atendimento a cliente exige cliente cadastrado; H. Interno / H. Ausência
+  // não têm cliente — gravam só o nome do tipo.
+  let cliente = null, nomeLinha;
+  if (tipoLinha === 'cliente'){
+    cliente = CLIENTS.find(c => c.nome.toLowerCase() === clienteNome.toLowerCase());
+    if(!cliente){ state.vigenteViewErr = `"${clienteNome}" não é um cliente cadastrado. Escolha um da lista de sugestões.`; render(); return; }
+    nomeLinha = cliente.nome;
+  } else {
+    nomeLinha = LINHAS_INTERNAS[tipoLinha].nome;
+  }
   if(!analistaId){ state.vigenteViewErr = 'Selecione o analista.'; render(); return; }
   if(!data){ state.vigenteViewErr = 'Informe a data.'; render(); return; }
 
-  const mesAtual = CONFIG.mesReferencia;
-  const anoAtual = CONFIG.anoReferencia;
+  // Vários dias seguidos (só pra agenda nova sem cliente): 1 agenda por dia útil.
+  let datas = [data];
+  if (!p.id && tipoLinha !== 'cliente' && dataFim){
+    if (dataFim < data){ state.vigenteViewErr = 'A data final não pode ser antes da data inicial.'; render(); return; }
+    if ((new Date(dataFim) - new Date(data)) / 86400000 > 90){ state.vigenteViewErr = 'Intervalo longo demais (máximo 90 dias). Divida em períodos menores.'; render(); return; }
+    datas = diasUteisEntre(data, dataFim);
+    if (datas.length === 0){ state.vigenteViewErr = 'Não há nenhum dia útil nesse intervalo (fins de semana e feriados são ignorados).'; render(); return; }
+  }
+
+  // Avisa (sem bloquear) se o analista já tem agenda no mesmo dia/período —
+  // pra H. Interno/Ausência isso significa que uma agenda de cliente precisa ser remanejada.
+  const conflitos = tipoLinha !== 'cliente'
+    ? conflitosVigenteDoAnalista(analistaId, datas.map(d => ({ data:d, periodo })), p.id ? [p.id] : [])
+    : [];
 
   state.salvandoVigenteView = true; state.vigenteViewErr = null; render();
+  let avisoConflito = '';
   try{
     const analista = userById(analistaId);
-    const row = {
-      cliente_id: cliente.id, cliente_nome_planilha: cliente.nome,
+    const base = {
+      cliente_id: cliente ? cliente.id : null, cliente_nome_planilha: nomeLinha,
       analista_id: analistaId, analista_nome_planilha: analista ? analista.name : '',
-      data, periodo, horas, tipo_agenda: tipoAgenda || null,
+      periodo, horas, tipo_agenda: tipoAgenda || null,
     };
     if(p.id){
-      const { error } = await sb.from('crm_agenda_vigente').update(row).eq('id', p.id);
+      const { error } = await sb.from('crm_agenda_vigente').update({ ...base, data }).eq('id', p.id);
       if(error){ state.vigenteViewErr = 'Erro ao salvar: ' + error.message; return; }
       const idx = AGENDA_VIGENTE.findIndex(r=>r.id===p.id);
       if(idx>=0){
         AGENDA_VIGENTE[idx] = { ...AGENDA_VIGENTE[idx],
-          clienteId: cliente.id, clienteNomePlanilha: cliente.nome,
-          analistaId, analistaNomePlanilha: row.analista_nome_planilha,
+          clienteId: cliente ? cliente.id : null, clienteNomePlanilha: nomeLinha,
+          analistaId, analistaNomePlanilha: base.analista_nome_planilha,
           data, periodo, horas, tipoAgenda,
         };
       }
       toast('Agenda vigente atualizada.');
     } else {
-      const { data: novaRow, error } = await sb.from('crm_agenda_vigente')
-        .insert({ ...row, mes: mesAtual, ano: anoAtual, importado_por: state.authUser.id })
-        .select().single();
+      // Cada agenda fica no mês da PRÓPRIA data (um intervalo pode cruzar meses).
+      const novas = datas.map(d => {
+        const dt = new Date(d + 'T00:00:00');
+        return { ...base, data: d, mes: MESES_PT[dt.getMonth()], ano: dt.getFullYear(), importado_por: state.authUser.id };
+      });
+      const { data: criadas, error } = await sb.from('crm_agenda_vigente').insert(novas).select();
       if(error){ state.vigenteViewErr = 'Erro ao criar: ' + error.message; return; }
-      AGENDA_VIGENTE.push(mapAgendaVigenteRow(novaRow));
-      toast('Agenda criada no Cronograma Vigente.');
+      (Array.isArray(criadas) ? criadas : [criadas]).forEach(r => AGENDA_VIGENTE.push(mapAgendaVigenteRow(r)));
+      toast(datas.length === 1
+        ? `Agenda criada no Cronograma Vigente${tipoLinha!=='cliente' ? ` (${LINHAS_INTERNAS[tipoLinha].rotulo})` : ''}.`
+        : `${datas.length} agendas de ${LINHAS_INTERNAS[tipoLinha].rotulo} criadas (${fmtDate(datas[0])} a ${fmtDate(datas[datas.length-1])}), uma por dia útil.`);
+    }
+    if (conflitos.length){
+      const linhas = conflitos.slice(0, 8).map(e => `• ${fmtDate(e.data)} — ${e.clienteNomePlanilha} (${e.periodo})`).join('\n');
+      avisoConflito = `⚠️ ${analista ? analista.name : 'O analista'} já tem agenda nesse(s) dia(s) — vale remanejar ou cancelar:\n\n${linhas}${conflitos.length>8 ? `\n… e mais ${conflitos.length-8}` : ''}`;
     }
     state.modal = null;
   } finally {
     state.salvandoVigenteView = false; render();
   }
+  if (avisoConflito) alert(avisoConflito);
 }
 
 async function excluirVigenteViewRow(id, aba){
@@ -6683,9 +6795,10 @@ function setFuturoFiltroCliente(v){ state.futuroFiltroCliente=v; render(); }
 function setFuturoFiltroAnalista(v){ state.futuroFiltroAnalista=v; render(); }
 function setFuturoFiltroGdr(v){ state.futuroFiltroGdr=v; render(); }
 function setFuturoFiltroPeriodo(v){ state.futuroFiltroPeriodo=v; render(); }
+function setFuturoFiltroAviso(v){ state.futuroFiltroAviso=v; render(); }
 function setFuturoOrdem(v){ state.futuroOrdem=v; render(); }
 function limparFiltrosFuturo(){
-  state.futuroFiltroCliente=''; state.futuroFiltroAnalista=''; state.futuroFiltroGdr=''; state.futuroFiltroPeriodo='';
+  state.futuroFiltroCliente=''; state.futuroFiltroAnalista=''; state.futuroFiltroGdr=''; state.futuroFiltroPeriodo=''; state.futuroFiltroAviso='';
   render();
 }
 
@@ -6700,6 +6813,7 @@ function pageFuturoView(){
   const fAnalista = state.futuroFiltroAnalista || '';
   const fGdr = state.futuroFiltroGdr || '';
   const fPeriodo = state.futuroFiltroPeriodo || '';
+  const fAviso = state.futuroFiltroAviso || '';
   const ordem = state.futuroOrdem || 'data';
 
   const nomeCliente = r => r.clienteId ? (clientById(r.clienteId)?.nome || r.clienteNomePlanilha) : r.clienteNomePlanilha;
@@ -6711,11 +6825,24 @@ function pageFuturoView(){
   };
   const gdrDe = r => (r.clienteId && clientById(r.clienteId)?.gdrNome) || '';
 
+  // Avisos da coluna Observação. O conflito é calculado sobre TODO o mês
+  // (fonte), não só a lista filtrada na tela — senão um filtro por
+  // cliente/analista poderia esconder a outra ponta do conflito e a pessoa
+  // nunca veria o aviso.
+  const idsConflitantes = computeConflitosFuturo(fonte);
+  const temConflito = r => idsConflitantes.has(r.id);
+  const temFeriado = r => !!feriadoNoDia(r.data);
+  const temFerias = r => !!feriasNoDia(r.analistaId, r.data);
+
   let list = fonte;
   if(fCliente) list = list.filter(r => String(r.clienteId||'') === fCliente);
   if(fAnalista) list = list.filter(r => String(r.analistaId||'') === fAnalista);
   if(fGdr) list = list.filter(r => gdrDe(r) === fGdr);
   if(fPeriodo) list = list.filter(r => r.periodo === fPeriodo);
+  if(fAviso === 'qualquer') list = list.filter(r => temConflito(r) || temFeriado(r) || temFerias(r));
+  else if(fAviso === 'conflito') list = list.filter(temConflito);
+  else if(fAviso === 'feriado') list = list.filter(temFeriado);
+  else if(fAviso === 'ferias') list = list.filter(temFerias);
 
   const comparadores = {
     data: (a,b) => (a.data||'').localeCompare(b.data||'') || nomeAnalista(a).localeCompare(nomeAnalista(b)),
@@ -6728,12 +6855,13 @@ function pageFuturoView(){
   const clientesNaFonte = [...new Map(fonte.filter(r=>r.clienteId).map(r=>[r.clienteId, nomeCliente(r)])).entries()].sort((a,b)=>a[1].localeCompare(b[1]));
   const analistasNaFonte = [...new Map(fonte.filter(r=>r.analistaId).map(r=>[r.analistaId, nomeAnalista(r)])).entries()].sort((a,b)=>a[1].localeCompare(b[1]));
   const gdrsNaFonte = [...new Set(fonte.map(gdrDe).filter(Boolean))].sort();
-  const temFiltroAtivo = fCliente || fAnalista || fGdr || fPeriodo;
+  const temFiltroAtivo = fCliente || fAnalista || fGdr || fPeriodo || fAviso;
   const totalHoras = list.reduce((s,r)=>s+(r.horas||0), 0);
-  // Calculado sobre TODO o mês (fonte), não só a lista filtrada na tela —
-  // senão um filtro por cliente/analista poderia esconder a outra ponta
-  // do conflito e a pessoa nunca veria o aviso.
-  const idsConflitantes = computeConflitosFuturo(fonte);
+  // Quantos registros do mês têm cada tipo de aviso (mostrado nas opções do filtro).
+  const qtdConflito = fonte.filter(temConflito).length;
+  const qtdFeriado = fonte.filter(temFeriado).length;
+  const qtdFerias = fonte.filter(temFerias).length;
+  const qtdQualquerAviso = fonte.filter(r => temConflito(r) || temFeriado(r) || temFerias(r)).length;
 
   return `
   <div class="topbar">
@@ -6782,6 +6910,16 @@ function pageFuturoView(){
           <select data-input="setFuturoFiltroPeriodo">
             <option value="">Todos</option>
             ${['Integral','Manhã','Tarde'].map(p=>`<option ${fPeriodo===p?'selected':''}>${p}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Observação</label>
+          <select data-input="setFuturoFiltroAviso">
+            <option value="">Todos</option>
+            <option value="qualquer" ${fAviso==='qualquer'?'selected':''}>Qualquer aviso (${qtdQualquerAviso})</option>
+            <option value="conflito" ${fAviso==='conflito'?'selected':''}>⚠️ Conflito de horário (${qtdConflito})</option>
+            <option value="feriado" ${fAviso==='feriado'?'selected':''}>📅 Feriado (${qtdFeriado})</option>
+            <option value="ferias" ${fAviso==='ferias'?'selected':''}>🏖️ Férias do analista (${qtdFerias})</option>
           </select>
         </div>
         <div class="field" style="margin-bottom:0;">
@@ -6835,11 +6973,11 @@ function openFuturoViewModal(id){
   if(!podeEditarFuturo(state.authUser.role)){ toast('Analistas não podem editar o Cronograma Futuro.', 'err'); return; }
   const r = id ? AGENDA_FUTURA.find(x=>x.id===id) : null;
   state.modal = { type:'futuroView', payload: r ? {
-    id: r.id, clienteId: r.clienteId || '',
+    id: r.id, tipoLinha: tipoLinhaDeAgenda(r), dataFim: '', clienteId: r.clienteId || '',
     analistaId: r.analistaId || '', data: r.data, periodo: r.periodo||'Integral',
     tipoAgenda: r.tipoAgenda||'', horas: r.horas||0,
   } : {
-    id: null, clienteId: '', analistaId: '', data: '', periodo: 'Integral',
+    id: null, tipoLinha: 'cliente', dataFim: '', clienteId: '', analistaId: '', data: '', periodo: 'Integral',
     tipoAgenda: '', horas: 8,
   }};
   state.futuroViewErr = null;
@@ -6858,6 +6996,15 @@ function modalFuturoView(){
       <div class="modal-body">
         ${state.futuroViewErr? `<div class="err-box">${state.futuroViewErr}</div>`:''}
         <div class="field">
+          <label>O que é essa agenda?</label>
+          <select id="fv-tipolinha" onchange="futuroTrocarTipoLinha(this.value)">
+            <option value="cliente" ${p.tipoLinha==='cliente'?'selected':''}>Atendimento a cliente</option>
+            <option value="interno" ${p.tipoLinha==='interno'?'selected':''}>H. Interno — treinamento, demanda interna…</option>
+            <option value="ausencia" ${p.tipoLinha==='ausencia'?'selected':''}>H. Ausência — banco de horas, atestado, afastamento…</option>
+          </select>
+        </div>
+        ${p.tipoLinha==='cliente' ? `
+        <div class="field">
           <label>Cliente *</label>
           <select id="fv-cliente">
             <option value="">Selecione…</option>
@@ -6866,7 +7013,7 @@ function modalFuturoView(){
               return `<option value="${c.id}" ${String(p.clienteId)===String(c.id)?'selected':''}>${c.nome} — GDR: ${gdrNome}</option>`;
             }).join('')}
           </select>
-        </div>
+        </div>` : ''}
         <div class="field-row">
           <div class="field">
             <label>Analista *</label>
@@ -6893,9 +7040,14 @@ function modalFuturoView(){
           </div>
         </div>
         <div class="field">
-          <label>Tipo de agenda</label>
-          <input id="fv-tipo" value="${p.tipoAgenda||''}">
+          <label>${p.tipoLinha==='cliente' ? 'Tipo de agenda' : 'Motivo'}</label>
+          <input id="fv-tipo" value="${p.tipoAgenda||''}" ${p.tipoLinha!=='cliente' ? `placeholder="${LINHAS_INTERNAS[p.tipoLinha].exemplos}"` : ''}>
         </div>
+        ${(!p.id && p.tipoLinha!=='cliente') ? `
+        <div class="field">
+          <label>Até (opcional) <span class="cell-sub">— vários dias seguidos: cria 1 agenda por dia útil, sem fim de semana nem feriado</span></label>
+          <input id="fv-data-fim" type="date" value="${p.dataFim||''}">
+        </div>` : ''}
       </div>
       <div class="modal-foot">
         <button type="button" class="btn btn-ghost" data-action="closeModal" data-args='[]'>Cancelar</button>
@@ -6905,38 +7057,74 @@ function modalFuturoView(){
   </div>`;
 }
 
+// Troca o tipo (cliente / H. Interno / H. Ausência) sem perder o que já foi digitado.
+function futuroTrocarTipoLinha(valor){
+  const p = state.modal.payload;
+  const v = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+  if (document.getElementById('fv-cliente')) p.clienteId = v('fv-cliente');
+  p.analistaId = v('fv-analista'); p.data = v('fv-data'); p.periodo = v('fv-periodo') || 'Integral';
+  p.horas = parseFloat(v('fv-horas')) || 0; p.tipoAgenda = v('fv-tipo').trim();
+  if (document.getElementById('fv-data-fim')) p.dataFim = v('fv-data-fim');
+  p.tipoLinha = valor;
+  state.futuroViewErr = null;
+  render();
+}
+
 async function salvarFuturoViewRow(){
   if(state.salvandoFuturoView) return;
   if(!podeEditarFuturo(state.authUser.role)){ toast('Analistas não podem editar o Cronograma Futuro.', 'err'); return; }
   const p = state.modal.payload;
-  const clienteId = document.getElementById('fv-cliente').value;
-  const analistaId = document.getElementById('fv-analista').value;
-  const data = document.getElementById('fv-data').value;
-  const periodo = document.getElementById('fv-periodo').value;
-  const horas = parseFloat(document.getElementById('fv-horas').value) || 0;
-  const tipoAgenda = document.getElementById('fv-tipo').value.trim();
-  p.clienteId = clienteId; p.analistaId = analistaId; p.data = data; p.periodo = periodo; p.horas = horas; p.tipoAgenda = tipoAgenda;
+  const v = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+  const tipoLinha = v('fv-tipolinha') || 'cliente';
+  const clienteId = v('fv-cliente');
+  const analistaId = v('fv-analista');
+  const data = v('fv-data');
+  const dataFim = v('fv-data-fim');
+  const periodo = v('fv-periodo');
+  const horas = parseFloat(v('fv-horas')) || 0;
+  const tipoAgenda = v('fv-tipo').trim();
+  p.tipoLinha = tipoLinha; p.clienteId = clienteId; p.analistaId = analistaId; p.data = data; p.dataFim = dataFim;
+  p.periodo = periodo; p.horas = horas; p.tipoAgenda = tipoAgenda;
 
-  // Escolhendo da lista (em vez de digitar o nome), não existe mais como
-  // dar "cliente não casado" — o valor do select já É o id do cliente.
-  if(!clienteId){ state.futuroViewErr = 'Selecione o cliente.'; render(); return; }
-  const cliente = clientById(clienteId);
-  if(!cliente){ state.futuroViewErr = 'Cliente inválido — selecione novamente da lista.'; render(); return; }
+  // Atendimento a cliente: escolhendo da lista (em vez de digitar o nome) não
+  // existe mais "cliente não casado" — o valor do select já É o id do cliente.
+  // H. Interno / H. Ausência não têm cliente: gravam só o nome do tipo.
+  let cliente = null, nomeLinha;
+  if (tipoLinha === 'cliente'){
+    if(!clienteId){ state.futuroViewErr = 'Selecione o cliente.'; render(); return; }
+    cliente = clientById(clienteId);
+    if(!cliente){ state.futuroViewErr = 'Cliente inválido — selecione novamente da lista.'; render(); return; }
+    nomeLinha = cliente.nome;
+  } else {
+    nomeLinha = LINHAS_INTERNAS[tipoLinha].nome;
+  }
   if(!analistaId){ state.futuroViewErr = 'Selecione o analista.'; render(); return; }
   if(!data){ state.futuroViewErr = 'Informe a data.'; render(); return; }
 
+  // Vários dias seguidos (só pra agenda nova sem cliente): 1 agenda por dia útil.
+  let datas = [data];
+  if (!p.id && tipoLinha !== 'cliente' && dataFim){
+    if (dataFim < data){ state.futuroViewErr = 'A data final não pode ser antes da data inicial.'; render(); return; }
+    datas = diasUteisEntre(data, dataFim);
+    if (datas.length === 0){ state.futuroViewErr = 'Não há nenhum dia útil nesse intervalo (fins de semana e feriados são ignorados).'; render(); return; }
+  }
+
   const meses = proximosMesesFuturo(3);
-  const dt = new Date(data + 'T00:00:00');
-  const alvo = meses.find(m => m.ano===dt.getFullYear() && m.mesIndex0===dt.getMonth());
-  if(!alvo){ state.futuroViewErr = `Essa data não cai em nenhum dos próximos 3 meses (${meses.map(m=>m.label).join(', ')}).`; render(); return; }
+  const mesDaData = iso => { const dt = new Date(iso + 'T00:00:00'); return meses.find(m => m.ano===dt.getFullYear() && m.mesIndex0===dt.getMonth()); };
+  if (datas.some(d => !mesDaData(d))){
+    state.futuroViewErr = datas.length === 1
+      ? `Essa data não cai em nenhum dos próximos 3 meses (${meses.map(m=>m.label).join(', ')}).`
+      : `O intervalo precisa ficar dentro dos próximos 3 meses (${meses.map(m=>m.label).join(', ')}).`;
+    render(); return;
+  }
 
   state.salvandoFuturoView = true; state.futuroViewErr = null; render();
   try{
     const analista = userById(analistaId);
-    const row = {
-      cliente_id: cliente.id, cliente_nome_planilha: cliente.nome,
+    const base = {
+      cliente_id: cliente ? cliente.id : null, cliente_nome_planilha: nomeLinha,
       analista_id: analistaId, analista_nome_planilha: analista ? analista.name : '',
-      data, periodo, horas, tipo_agenda: tipoAgenda || null,
+      periodo, horas, tipo_agenda: tipoAgenda || null,
     };
     if(p.id){
       // Uma edição manual "promove" a linha pra origem='manual' — mesmo que
@@ -6944,24 +7132,25 @@ async function salvarFuturoViewRow(){
       // alguém mexeu nela de propósito, ela vira uma decisão manual e
       // precisa ficar protegida de ser apagada numa reimportação futura do
       // Setup (que só mexe em linhas ainda marcadas como 'setup').
-      const { error } = await sb.from('crm_agenda_futura').update({ ...row, origem: 'manual' }).eq('id', p.id);
+      const { error } = await sb.from('crm_agenda_futura').update({ ...base, data, origem: 'manual' }).eq('id', p.id);
       if(error){ state.futuroViewErr = 'Erro ao salvar: ' + error.message; return; }
       const idx = AGENDA_FUTURA.findIndex(r=>r.id===p.id);
       if(idx>=0){
         AGENDA_FUTURA[idx] = { ...AGENDA_FUTURA[idx],
-          clienteId: cliente.id, clienteNomePlanilha: cliente.nome,
-          analistaId, analistaNomePlanilha: row.analista_nome_planilha,
+          clienteId: cliente ? cliente.id : null, clienteNomePlanilha: nomeLinha,
+          analistaId, analistaNomePlanilha: base.analista_nome_planilha,
           data, periodo, horas, tipoAgenda, origem: 'manual',
         };
       }
       toast('Agenda futura atualizada.');
     } else {
-      const { data: novaRow, error } = await sb.from('crm_agenda_futura')
-        .insert({ ...row, origem: 'manual', mes: alvo.mes, ano: alvo.ano, criado_por: state.authUser.id })
-        .select().single();
+      const novas = datas.map(d => { const alvo = mesDaData(d); return { ...base, data: d, origem: 'manual', mes: alvo.mes, ano: alvo.ano, criado_por: state.authUser.id }; });
+      const { data: criadas, error } = await sb.from('crm_agenda_futura').insert(novas).select();
       if(error){ state.futuroViewErr = 'Erro ao criar: ' + error.message; return; }
-      AGENDA_FUTURA.push(mapAgendaFuturaRow(novaRow));
-      toast('Agenda criada no Cronograma Futuro.');
+      (Array.isArray(criadas) ? criadas : [criadas]).forEach(r => AGENDA_FUTURA.push(mapAgendaFuturaRow(r)));
+      toast(datas.length === 1
+        ? `Agenda criada no Cronograma Futuro${tipoLinha!=='cliente' ? ` (${LINHAS_INTERNAS[tipoLinha].rotulo})` : ''}.`
+        : `${datas.length} agendas de ${LINHAS_INTERNAS[tipoLinha].rotulo} criadas (${fmtDate(datas[0])} a ${fmtDate(datas[datas.length-1])}), uma por dia útil.`);
     }
     state.modal = null;
   } finally {
@@ -8528,7 +8717,7 @@ const ACTIONS = {
   setVigenteViewTab, setVigenteMesSelecionado, setVigenteFiltroCliente, setVigenteFiltroAnalista, setVigenteFiltroGdr, setVigenteFiltroPeriodo, setVigenteFiltroTipo, setVigenteOrdem, limparFiltrosVigente,
   promoverMesParaVigente, desfazerPromocaoMes,
   openVigenteViewModal, salvarVigenteViewRow, excluirVigenteViewRow,
-  setFuturoMesIdx, setFuturoFiltroCliente, setFuturoFiltroAnalista, setFuturoFiltroGdr, setFuturoFiltroPeriodo, setFuturoOrdem, limparFiltrosFuturo,
+  setFuturoMesIdx, setFuturoFiltroCliente, setFuturoFiltroAnalista, setFuturoFiltroGdr, setFuturoFiltroPeriodo, setFuturoFiltroAviso, setFuturoOrdem, limparFiltrosFuturo,
   materializarSetupParaFuturo, openFuturoViewModal, salvarFuturoViewRow, excluirFuturoViewRow,
   abrirModalCancelarAgenda, confirmarCancelamentoAgenda,
   criarFeriado, excluirFeriado, openFeriasModal, salvarFerias,
