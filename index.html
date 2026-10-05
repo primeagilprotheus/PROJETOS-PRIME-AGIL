@@ -2751,7 +2751,7 @@ async function saveClient(){
    Lê a aba "Visão - Por Cliente" de um .xlsx no formato do
    "CONTROLE GERAL DE AGENDAS ATIVAS", identifica período
    integral/meio via cor da fonte, projeta "Semana N + dia da
-   semana" em datas reais (blocos fixos de 7 dias) para o mês
+   semana" em datas reais (N-ésima ocorrência do dia no mês) para o mês
    atual + 3 meses seguintes, e permite criar cada agenda:
    link de convite no Google Agenda + registro em crm_agendas.
 
@@ -2918,41 +2918,24 @@ function extractAgendaClients(grid){
 }
 const IMPORT_WEEKDAY_INDEX_COLS = { 3:'Segunda', 4:'Terça', 5:'Quarta', 6:'Quinta', 7:'Sexta' };
 
-/* "Semana N" = a N-ésima semana REAL do calendário (segunda a sexta),
-   começando no dia 1 do mês (ou pulando pro próximo dia útil se o dia 1
-   cair num fim de semana). Se o mês começa no meio da semana (ex: numa
-   terça), a Semana 1 fica parcial — os dias anteriores àquele início
-   (ex: a "Segunda" da semana 1) simplesmente não existem para esse mês. */
-function segundaDaSemanaImport(date){
-  const dow = date.getDay(); // 0=Dom,1=Seg,...6=Sáb
-  const diff = (dow + 6) % 7; // dias desde a última segunda-feira
-  const d = new Date(date);
-  d.setDate(d.getDate() - diff);
-  return d;
-}
-function inicioSemana1Import(ano, mesIndex0){
-  const dia1 = new Date(ano, mesIndex0, 1);
-  const dow = dia1.getDay();
-  if (dow === 0 || dow === 6){ // dia 1 cai num fim de semana -> começa na próxima segunda
-    const seg = segundaDaSemanaImport(dia1);
-    seg.setDate(seg.getDate() + 7);
-    return seg;
-  }
-  return dia1; // dia 1 já é dia útil -> a semana 1 começa nele mesmo (pode ser parcial)
-}
-function primeiraDataNoBloco(ano, mesIndex0, semana, diaSemanaNome){
-  const inicio = inicioSemana1Import(ano, mesIndex0);
-  const segundaSemana1 = segundaDaSemanaImport(inicio);
-  const segundaAlvo = new Date(segundaSemana1);
-  segundaAlvo.setDate(segundaAlvo.getDate() + (semana - 1) * 7);
-  const alvoIndex = IMPORT_WEEKDAY_INDEX[diaSemanaNome] - 1; // Segunda=0 ... Sexta=4
-  const dataFinal = new Date(segundaAlvo);
-  dataFinal.setDate(dataFinal.getDate() + alvoIndex);
-  // Segurança extra: a data final tem que cair DENTRO do mês pedido — nunca
-  // no mês anterior nem no seguinte. Cobre tanto "semana 1 antes do dia 1"
-  // quanto qualquer transbordo do outro lado (ex: semana 5 raríssima).
-  if (dataFinal.getFullYear() !== ano || dataFinal.getMonth() !== mesIndex0) return null;
-  return dataFinal;
+/* "Semana N + dia da semana" = a N-ÉSIMA OCORRÊNCIA daquele dia da semana
+   dentro do mês. Ex.: "Semana 1 + Terça" = a 1ª terça do mês; "Semana 3 +
+   Terça" = a 3ª terça — independente de em que dia da semana o mês começa.
+   (Regra anterior: semanas de calendário segunda-a-domingo ancoradas no dia
+   1. Num mês que começava no meio da semana, a Semana 1 ficava parcial e os
+   dias anteriores ao dia 1 — ex.: a terça e a quarta de um mês que começa
+   numa quinta — simplesmente sumiam.)
+   Só existem as Semanas 1 a 4, que sempre existem em qualquer mês. A 5ª
+   ocorrência de um dia (meses com 5 terças, por ex.) não pertence a
+   nenhuma semana do Setup, e continua sem agenda gerada. */
+function dataNesimaOcorrenciaNoMes(ano, mesIndex0, n, diaSemanaNome){
+  const alvoDow = IMPORT_WEEKDAY_INDEX[diaSemanaNome]; // Segunda=1 ... Sexta=5 (mesmo valor de Date.getDay())
+  if (!alvoDow || !(n >= 1)) return null;
+  const diaSemanaDoDia1 = new Date(ano, mesIndex0, 1).getDay();
+  const deslocamento = (alvoDow - diaSemanaDoDia1 + 7) % 7; // dias até a 1ª ocorrência
+  const data = new Date(ano, mesIndex0, 1 + deslocamento + (n - 1) * 7);
+  if (data.getMonth() !== mesIndex0) return null; // ocorrência que não existe nesse mês (ex.: 5ª)
+  return data;
 }
 function proximosMesesImport(qtd){
   // Começa no PRÓXIMO mês de referência, não no atual — o mês atual já é
@@ -3032,7 +3015,7 @@ async function processarImportacao(file){
       for (const entry of cp.entries){
         const periodo = periodoHorario(entry.categoria, entry.anotacao);
         for (const mes of meses){
-          const dt = primeiraDataNoBloco(mes.ano, mes.mesIndex0, entry.semana, entry.dia);
+          const dt = dataNesimaOcorrenciaNoMes(mes.ano, mes.mesIndex0, entry.semana, entry.dia);
           if (!dt) continue;
           const analistaCrm = matchAnalistaUsuario(entry.pessoa);
           linhas.push({
@@ -3702,7 +3685,7 @@ function computeSetupBusyMap(grid){
   const busyMap = {};
   for (const c of clientes){
     for (const entry of c.entries){
-      const dt = primeiraDataNoBloco(ano, mesIndex0, entry.semana, entry.dia);
+      const dt = dataNesimaOcorrenciaNoMes(ano, mesIndex0, entry.semana, entry.dia);
       if (!dt) continue;
       const dateStr = isoDate(dt);
       const nomeNorm = normalizeName(entry.pessoa);
@@ -3953,7 +3936,7 @@ function computeRecorrenciaBusyMapParaMes(ano, mesIndex0){
   const map = {};
   for (const r of RECORRENCIA){
     if (!r.ativo || !r.analistaId) continue;
-    const dt = primeiraDataNoBloco(ano, mesIndex0, r.semana, r.dia);
+    const dt = dataNesimaOcorrenciaNoMes(ano, mesIndex0, r.semana, r.dia);
     if (!dt) continue;
     const dstr = isoDate(dt);
     const fracao = r.periodo === 'Integral' ? 1 : 0.5;
@@ -5316,7 +5299,7 @@ function pageRecorrencia(){
 
   return `
   <div class="topbar">
-    <div><h1>Setup Mensal</h1><div class="sub">Grade semanal fixa (cliente × analista × semana × dia) — datas mostradas são dos 3 meses seguintes a ${CONFIG.mesReferencia}/${CONFIG.anoReferencia} (mês de referência, já coberto pelo Cronograma Vigente).${podeEditar? ' Toda manutenção é feita aqui, sem precisar reenviar planilha.' : ' Apenas RMO, Coordenação e Gerência podem editar — você está em modo visualização.'}</div></div>
+    <div><h1>Setup Mensal</h1><div class="sub">Grade semanal fixa (cliente × analista × semana × dia): "Semana N" é a N-ésima ocorrência do dia no mês (ex.: Semana 1 + Terça = 1ª terça do mês), seja qual for o dia em que o mês começa — datas mostradas são dos 3 meses seguintes a ${CONFIG.mesReferencia}/${CONFIG.anoReferencia} (mês de referência, já coberto pelo Cronograma Vigente).${podeEditar? ' Toda manutenção é feita aqui, sem precisar reenviar planilha.' : ' Apenas RMO, Coordenação e Gerência podem editar — você está em modo visualização.'}</div></div>
     ${podeEditar? `<button class="btn btn-primary" data-action="openRecorrenciaModal" data-args='[]'>+ Nova recorrência</button>` : ''}
   </div>
 
@@ -5461,7 +5444,7 @@ function blocoRecorrenciaPorCliente(list, chavesOrdenadas, porCliente, nomeExibi
         <tbody>
           ${entries.map(r=>{
             const datasFuturas = proximosMesesFuturo(3).map(m=>{
-              const dt = primeiraDataNoBloco(m.ano, m.mesIndex0, r.semana, r.dia);
+              const dt = dataNesimaOcorrenciaNoMes(m.ano, m.mesIndex0, r.semana, r.dia);
               if(!dt) return null;
               const dataStr = isoDate(dt);
               const jaCriada = r.analistaId && r.clienteId && (
@@ -5703,7 +5686,7 @@ async function enviarAgendaDeRecorrencia(id){
   const r = RECORRENCIA.find(x=>x.id===id);
   if(!r) return;
   const hoje = new Date();
-  const dataPrevista = primeiraDataNoBloco(hoje.getFullYear(), hoje.getMonth(), r.semana, r.dia);
+  const dataPrevista = dataNesimaOcorrenciaNoMes(hoje.getFullYear(), hoje.getMonth(), r.semana, r.dia);
   if(!dataPrevista){ toast('Essa semana ainda não tem data válida no mês atual.', 'err'); return; }
   await enviarAgendaDeRecorrenciaData(id, isoDate(dataPrevista));
 }
@@ -6649,7 +6632,7 @@ async function materializarSetupParaFuturo(){
     for (const m of meses){
       for (const r of RECORRENCIA){
         if (!r.ativo || !r.analistaId || !r.clienteId) continue;
-        const dt = primeiraDataNoBloco(m.ano, m.mesIndex0, r.semana, r.dia);
+        const dt = dataNesimaOcorrenciaNoMes(m.ano, m.mesIndex0, r.semana, r.dia);
         if (!dt) continue;
         const analista = userById(r.analistaId);
         const cliente = clientById(r.clienteId);
